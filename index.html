@@ -1,0 +1,800 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SVG to TFT_eSPI Converter</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #1a1a1a;
+        color: #e0e0e0;
+        padding: 20px;
+        line-height: 1.6;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+      }
+
+      .container {
+        max-width: 900px;
+        width: 100%;
+      }
+
+      header {
+        text-align: center;
+        margin-bottom: 40px;
+      }
+
+      h1 {
+        font-size: 2.5em;
+        margin-bottom: 10px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+      }
+
+      .subtitle {
+        color: #888;
+        font-size: 1.1em;
+      }
+
+      .panel {
+        background: #2a2a2a;
+        border-radius: 12px;
+        padding: 30px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        margin-bottom: 20px;
+      }
+
+      .upload-area {
+        border: 3px dashed #444;
+        border-radius: 8px;
+        padding: 60px;
+        text-align: center;
+        cursor: pointer;
+        transition: all 0.3s;
+        margin-bottom: 20px;
+      }
+
+      .upload-area:hover {
+        border-color: #667eea;
+        background: #333;
+      }
+
+      .upload-area.dragover {
+        border-color: #764ba2;
+        background: #333;
+      }
+
+      .upload-icon {
+        font-size: 4em;
+        margin-bottom: 15px;
+      }
+
+      input[type="file"] {
+        display: none;
+      }
+
+      textarea {
+        width: 100%;
+        min-height: 400px;
+        background: #1a1a1a;
+        border: 1px solid #444;
+        border-radius: 8px;
+        padding: 20px;
+        color: #e0e0e0;
+        font-family: "Courier New", monospace;
+        font-size: 0.9em;
+        resize: vertical;
+      }
+
+      .button-group {
+        display: flex;
+        gap: 10px;
+        margin-top: 20px;
+      }
+
+      button {
+        flex: 1;
+        padding: 15px 24px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+        border-radius: 8px;
+        cursor: pointer;
+        font-size: 1em;
+        font-weight: 600;
+        transition:
+          transform 0.2s,
+          box-shadow 0.2s;
+      }
+
+      button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+      }
+
+      button:active {
+        transform: translateY(0);
+      }
+
+      .info-box {
+        background: #1a3a5a;
+        border-left: 4px solid #667eea;
+        padding: 15px;
+        margin-top: 20px;
+        border-radius: 6px;
+        font-size: 0.9em;
+      }
+
+      .hidden {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>SVG to TFT_eSPI Converter</h1>
+        <p class="subtitle">
+          Convert SVG graphics to Arduino sketches for TFT displays
+        </p>
+      </header>
+
+      <div class="panel" id="uploadPanel">
+        <div class="upload-area" id="uploadArea">
+          <div class="upload-icon">📤</div>
+          <p style="font-size: 1.3em; margin-bottom: 10px">
+            <strong>Drop SVG file here</strong>
+          </p>
+          <p style="color: #888">or click to browse</p>
+          <input type="file" id="fileInput" accept=".svg,image/svg+xml" />
+        </div>
+      </div>
+
+      <div class="panel hidden" id="outputPanel">
+        <textarea id="codeOutput" readonly></textarea>
+
+        <div class="button-group">
+          <button onclick="downloadSketch()">💾 Download .ino</button>
+          <button onclick="copyCode()">📋 Copy Code</button>
+          <button onclick="reset()">🔄 New SVG</button>
+        </div>
+
+        <div class="info-box">
+          <strong>Auto-detected:</strong> Background color, text font sizes
+          mapped to TFT_eSPI fonts (1=8px, 2=16px, 4=26px, 6=48px, 7=48px
+          digits, 8=75px)
+        </div>
+      </div>
+    </div>
+
+    <script>
+      let currentSVG = null;
+      let parsedElements = [];
+      let gradients = {};
+      let svgFileName = "";
+      let backgroundColor = "TFT_BLACK";
+
+      // TFT_eSPI font sizes in pixels (approximate heights)
+      const FONT_SIZES = {
+        1: 8,
+        2: 16,
+        4: 26,
+        6: 48,
+        7: 48, // 7-segment
+        8: 75,
+      };
+
+      // File upload handling
+      const uploadArea = document.getElementById("uploadArea");
+      const fileInput = document.getElementById("fileInput");
+
+      uploadArea.addEventListener("click", () => fileInput.click());
+
+      uploadArea.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        uploadArea.classList.add("dragover");
+      });
+
+      uploadArea.addEventListener("dragleave", () => {
+        uploadArea.classList.remove("dragover");
+      });
+
+      uploadArea.addEventListener("drop", (e) => {
+        e.preventDefault();
+        uploadArea.classList.remove("dragover");
+        const file = e.dataTransfer.files[0];
+        if (
+          file &&
+          (file.type === "image/svg+xml" || file.name.endsWith(".svg"))
+        ) {
+          loadSVG(file);
+        }
+      });
+
+      fileInput.addEventListener("change", (e) => {
+        const file = e.target.files[0];
+        if (file) {
+          loadSVG(file);
+        }
+      });
+
+      function sanitizeName(filename) {
+        let name = filename.replace(/\.svg$/i, "");
+        name = name.replace(/[^a-zA-Z0-9_]/g, "_");
+        name = name.replace(/^_+|_+$/g, "");
+        if (name && !/^[a-zA-Z]/.test(name)) {
+          name = "svg_" + name;
+        }
+        return name.charAt(0).toUpperCase() + name.slice(1);
+      }
+
+      function loadSVG(file) {
+        svgFileName = sanitizeName(file.name);
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const svgContent = e.target.result;
+          processSVG(svgContent);
+        };
+        reader.readAsText(file);
+      }
+
+      function processSVG(svgContent) {
+        const parser = new DOMParser();
+        const svgDoc = parser.parseFromString(svgContent, "image/svg+xml");
+        currentSVG = svgDoc.querySelector("svg");
+
+        if (!currentSVG) {
+          alert("Invalid SVG file");
+          return;
+        }
+
+        // Detect background color
+        detectBackgroundColor();
+
+        // Parse SVG
+        parseSVGElements();
+        generateCode();
+
+        // Show output panel
+        document.getElementById("uploadPanel").classList.add("hidden");
+        document.getElementById("outputPanel").classList.remove("hidden");
+      }
+
+      function detectBackgroundColor() {
+        // Check for background color in various places
+        let bgColor = null;
+
+        // Check SVG style attribute
+        const svgStyle = currentSVG.getAttribute("style");
+        if (svgStyle) {
+          const bgMatch = svgStyle.match(
+            /background(?:-color)?\s*:\s*([^;]+)/i,
+          );
+          if (bgMatch) {
+            bgColor = bgMatch[1].trim();
+          }
+        }
+
+        // Check for a background rect (first rect that covers the whole viewbox)
+        const viewBox = currentSVG.getAttribute("viewBox");
+        let vbWidth, vbHeight;
+        if (viewBox) {
+          const parts = viewBox.split(/\s+|,/);
+          vbWidth = parseFloat(parts[2]);
+          vbHeight = parseFloat(parts[3]);
+        } else {
+          vbWidth = parseFloat(currentSVG.getAttribute("width")) || 100;
+          vbHeight = parseFloat(currentSVG.getAttribute("height")) || 100;
+        }
+
+        const rects = currentSVG.querySelectorAll("rect");
+        for (let rect of rects) {
+          const x = parseFloat(rect.getAttribute("x") || 0);
+          const y = parseFloat(rect.getAttribute("y") || 0);
+          const w = parseFloat(rect.getAttribute("width") || 0);
+          const h = parseFloat(rect.getAttribute("height") || 0);
+
+          // Check if this rect covers the entire canvas
+          if (x === 0 && y === 0 && w === vbWidth && h === vbHeight) {
+            const fill =
+              rect.getAttribute("fill") || getStyleValue(rect, "fill");
+            if (fill && fill !== "none") {
+              bgColor = fill;
+              break;
+            }
+          }
+        }
+
+        // Convert to TFT color
+        backgroundColor = bgColor ? colorToRGB565(bgColor) : "TFT_BLACK";
+        if (!backgroundColor) {
+          backgroundColor = "TFT_BLACK";
+        }
+      }
+
+      function getClosestFont(pixelSize) {
+        // Parse pixel size from various formats
+        let size = pixelSize;
+        if (typeof size === "string") {
+          size = parseFloat(size.replace(/px|pt|em|rem/gi, ""));
+          // Convert pt to px (1pt ≈ 1.333px)
+          if (pixelSize.includes("pt")) {
+            size *= 1.333;
+          }
+        }
+
+        // Find closest TFT_eSPI font
+        let closestFont = 2;
+        let minDiff = Infinity;
+
+        for (let [font, height] of Object.entries(FONT_SIZES)) {
+          const diff = Math.abs(height - size);
+          if (diff < minDiff) {
+            minDiff = diff;
+            closestFont = parseInt(font);
+          }
+        }
+
+        return closestFont;
+      }
+
+      function getStyleValue(element, attr, defaultValue = null) {
+        if (element.hasAttribute(attr)) {
+          return element.getAttribute(attr);
+        }
+
+        const styleAttr = element.getAttribute("style");
+        if (styleAttr) {
+          const regex = new RegExp(attr + "\\s*:\\s*([^;]+)", "i");
+          const match = styleAttr.match(regex);
+          if (match) {
+            return match[1].trim();
+          }
+        }
+
+        let parent = element.parentElement;
+        while (parent && parent.tagName.toLowerCase() !== "svg") {
+          if (parent.hasAttribute(attr)) {
+            return parent.getAttribute(attr);
+          }
+
+          const parentStyle = parent.getAttribute("style");
+          if (parentStyle) {
+            const regex = new RegExp(attr + "\\s*:\\s*([^;]+)", "i");
+            const match = parentStyle.match(regex);
+            if (match) {
+              return match[1].trim();
+            }
+          }
+
+          parent = parent.parentElement;
+        }
+
+        if (currentSVG && currentSVG.hasAttribute(attr)) {
+          return currentSVG.getAttribute(attr);
+        }
+
+        const svgStyle = currentSVG ? currentSVG.getAttribute("style") : null;
+        if (svgStyle) {
+          const regex = new RegExp(attr + "\\s*:\\s*([^;]+)", "i");
+          const match = svgStyle.match(regex);
+          if (match) {
+            return match[1].trim();
+          }
+        }
+
+        return defaultValue || (attr === "fill" ? "black" : "none");
+      }
+
+      function parseSVGElements() {
+        parsedElements = [];
+        gradients = {};
+
+        // Parse gradients
+        const linearGradients = currentSVG.querySelectorAll("linearGradient");
+        linearGradients.forEach((grad) => {
+          const id = grad.getAttribute("id");
+          const stops = grad.querySelectorAll("stop");
+          if (stops.length >= 2) {
+            gradients[id] = {
+              x1: parseFloat(grad.getAttribute("x1") || 0),
+              y1: parseFloat(grad.getAttribute("y1") || 0),
+              x2: parseFloat(grad.getAttribute("x2") || 100),
+              y2: parseFloat(grad.getAttribute("y2") || 0),
+              color1: stops[0].getAttribute("stop-color") || "black",
+              color2:
+                stops[stops.length - 1].getAttribute("stop-color") || "white",
+            };
+          }
+        });
+
+        // Parse all drawable elements
+        const elements = currentSVG.querySelectorAll(
+          "rect, circle, ellipse, line, polyline, polygon, path, text, image",
+        );
+
+        elements.forEach((el) => {
+          const type = el.tagName.toLowerCase();
+          const element = { type, attributes: {} };
+
+          for (let attr of el.attributes) {
+            element.attributes[attr.name] = attr.value;
+          }
+
+          element.fill = getStyleValue(
+            el,
+            "fill",
+            type === "text" ? "black" : "black",
+          );
+          element.stroke = getStyleValue(el, "stroke", "none");
+          element.strokeWidth = getStyleValue(el, "stroke-width", "1");
+
+          if (type === "text") {
+            element.fontSize = getStyleValue(el, "font-size", "16px");
+            element.fontFamily = getStyleValue(el, "font-family", "sans-serif");
+            element.textContent = el.textContent.trim();
+            element.textAnchor = getStyleValue(el, "text-anchor", "start");
+            element.tftFont = getClosestFont(element.fontSize);
+          }
+
+          if (type === "image") {
+            element.href =
+              el.getAttribute("href") || el.getAttribute("xlink:href");
+          }
+
+          parsedElements.push(element);
+        });
+      }
+
+      function colorToRGB565(color) {
+        if (!color || color === "none" || color === "transparent") return null;
+
+        if (color.startsWith("url(")) {
+          const match = color.match(/url\(#(.+)\)/);
+          if (match && gradients[match[1]]) {
+            return { gradient: match[1] };
+          }
+          return null;
+        }
+
+        const namedColors = {
+          black: "TFT_BLACK",
+          white: "TFT_WHITE",
+          red: "TFT_RED",
+          green: "TFT_GREEN",
+          blue: "TFT_BLUE",
+          cyan: "TFT_CYAN",
+          magenta: "TFT_MAGENTA",
+          yellow: "TFT_YELLOW",
+          orange: "TFT_ORANGE",
+          navy: "TFT_NAVY",
+          darkgreen: "TFT_DARKGREEN",
+          darkcyan: "TFT_DARKCYAN",
+          maroon: "TFT_MAROON",
+          purple: "TFT_PURPLE",
+          olive: "TFT_OLIVE",
+          lightgrey: "TFT_LIGHTGREY",
+          darkgrey: "TFT_DARKGREY",
+          pink: "TFT_PINK",
+          greenyellow: "TFT_GREENYELLOW",
+          gray: "TFT_DARKGREY",
+          grey: "TFT_DARKGREY",
+        };
+
+        const lowerColor = color.toLowerCase().trim();
+        if (namedColors[lowerColor]) {
+          return namedColors[lowerColor];
+        }
+
+        let r, g, b;
+        if (color.startsWith("#")) {
+          const hex = color.substring(1);
+          if (hex.length === 3) {
+            r = parseInt(hex[0] + hex[0], 16);
+            g = parseInt(hex[1] + hex[1], 16);
+            b = parseInt(hex[2] + hex[2], 16);
+          } else {
+            r = parseInt(hex.substring(0, 2), 16);
+            g = parseInt(hex.substring(2, 4), 16);
+            b = parseInt(hex.substring(4, 6), 16);
+          }
+        } else if (color.startsWith("rgb")) {
+          const matches = color.match(/\d+/g);
+          if (matches && matches.length >= 3) {
+            [r, g, b] = matches.map(Number);
+          } else {
+            return "TFT_BLACK";
+          }
+        } else {
+          return "TFT_BLACK";
+        }
+
+        const rgb565 = ((r & 0xf8) << 8) | ((g & 0xfc) << 3) | (b >> 3);
+        return `0x${rgb565.toString(16).toUpperCase().padStart(4, "0")}`;
+      }
+
+      function generateCode() {
+        const functionName = "drawSVG" + svgFileName;
+
+        let code = `// Generated by SVG to TFT_eSPI Converter
+// Source: ${svgFileName}.svg
+
+#include <TFT_eSPI.h>
+
+TFT_eSPI tft = TFT_eSPI();
+
+void ${functionName}(TFT_eSPI &tft, int16_t x_offset, int16_t y_offset) {
+`;
+
+        parsedElements.forEach((el, idx) => {
+          code += `  // Element ${idx + 1}: ${el.type}\n`;
+
+          const fillColor = colorToRGB565(el.fill);
+          const strokeColor = colorToRGB565(el.stroke);
+
+          switch (el.type) {
+            case "rect":
+              const x = parseFloat(el.attributes.x || 0);
+              const y = parseFloat(el.attributes.y || 0);
+              const w = parseFloat(el.attributes.width || 0);
+              const h = parseFloat(el.attributes.height || 0);
+              const rx = parseFloat(el.attributes.rx || 0);
+
+              if (fillColor && fillColor.gradient) {
+                const grad = gradients[fillColor.gradient];
+                const isVertical =
+                  Math.abs(grad.y2 - grad.y1) > Math.abs(grad.x2 - grad.x1);
+                const gradFunc = isVertical
+                  ? "fillRectVGradient"
+                  : "fillRectHGradient";
+                code += `  tft.${gradFunc}(x_offset + ${x}, y_offset + ${y}, ${w}, ${h}, ${colorToRGB565(grad.color1)}, ${colorToRGB565(grad.color2)});\n`;
+              } else if (fillColor) {
+                if (rx > 0) {
+                  code += `  tft.fillRoundRect(x_offset + ${x}, y_offset + ${y}, ${w}, ${h}, ${rx}, ${fillColor});\n`;
+                } else {
+                  code += `  tft.fillRect(x_offset + ${x}, y_offset + ${y}, ${w}, ${h}, ${fillColor});\n`;
+                }
+              }
+              if (strokeColor) {
+                if (rx > 0) {
+                  code += `  tft.drawRoundRect(x_offset + ${x}, y_offset + ${y}, ${w}, ${h}, ${rx}, ${strokeColor});\n`;
+                } else {
+                  code += `  tft.drawRect(x_offset + ${x}, y_offset + ${y}, ${w}, ${h}, ${strokeColor});\n`;
+                }
+              }
+              break;
+
+            case "circle":
+              const cx = parseFloat(el.attributes.cx || 0);
+              const cy = parseFloat(el.attributes.cy || 0);
+              const r = parseFloat(el.attributes.r || 0);
+
+              if (fillColor && !fillColor.gradient) {
+                code += `  tft.fillCircle(x_offset + ${cx}, y_offset + ${cy}, ${r}, ${fillColor});\n`;
+              }
+              if (strokeColor) {
+                code += `  tft.drawCircle(x_offset + ${cx}, y_offset + ${cy}, ${r}, ${strokeColor});\n`;
+              }
+              break;
+
+            case "ellipse":
+              const ecx = parseFloat(el.attributes.cx || 0);
+              const ecy = parseFloat(el.attributes.cy || 0);
+              const erx = parseFloat(el.attributes.rx || 0);
+              const ery = parseFloat(el.attributes.ry || 0);
+
+              const avgR = (erx + ery) / 2;
+              if (fillColor && !fillColor.gradient) {
+                code += `  // Ellipse approximated as circle\n`;
+                code += `  tft.fillCircle(x_offset + ${ecx}, y_offset + ${ecy}, ${Math.round(avgR)}, ${fillColor});\n`;
+              }
+              if (strokeColor) {
+                code += `  tft.drawCircle(x_offset + ${ecx}, y_offset + ${ecy}, ${Math.round(avgR)}, ${strokeColor});\n`;
+              }
+              break;
+
+            case "line":
+              const x1 = parseFloat(el.attributes.x1 || 0);
+              const y1 = parseFloat(el.attributes.y1 || 0);
+              const x2 = parseFloat(el.attributes.x2 || 0);
+              const y2 = parseFloat(el.attributes.y2 || 0);
+
+              const lineColor = strokeColor || fillColor;
+              if (lineColor && !lineColor.gradient) {
+                code += `  tft.drawLine(x_offset + ${x1}, y_offset + ${y1}, x_offset + ${x2}, y_offset + ${y2}, ${lineColor});\n`;
+              }
+              break;
+
+            case "polyline":
+            case "polygon":
+              const points = el.attributes.points
+                .trim()
+                .split(/[\s,]+/)
+                .map(parseFloat);
+              const polyColor = strokeColor || fillColor;
+
+              if (points.length === 6 && el.type === "polygon") {
+                if (fillColor && !fillColor.gradient) {
+                  code += `  tft.fillTriangle(x_offset + ${points[0]}, y_offset + ${points[1]}, x_offset + ${points[2]}, y_offset + ${points[3]}, x_offset + ${points[4]}, y_offset + ${points[5]}, ${fillColor});\n`;
+                }
+                if (strokeColor) {
+                  code += `  tft.drawTriangle(x_offset + ${points[0]}, y_offset + ${points[1]}, x_offset + ${points[2]}, y_offset + ${points[3]}, x_offset + ${points[4]}, y_offset + ${points[5]}, ${strokeColor});\n`;
+                }
+              } else if (
+                polyColor &&
+                !polyColor.gradient &&
+                points.length >= 4
+              ) {
+                for (let i = 0; i < points.length - 2; i += 2) {
+                  code += `  tft.drawLine(x_offset + ${points[i]}, y_offset + ${points[i + 1]}, x_offset + ${points[i + 2]}, y_offset + ${points[i + 3]}, ${polyColor});\n`;
+                }
+                if (el.type === "polygon" && points.length >= 4) {
+                  code += `  tft.drawLine(x_offset + ${points[points.length - 2]}, y_offset + ${points[points.length - 1]}, x_offset + ${points[0]}, y_offset + ${points[1]}, ${polyColor});\n`;
+                }
+              }
+              break;
+
+            case "path":
+              code += `  // Path drawing (simplified)\n`;
+              const d = el.attributes.d;
+              if (d) {
+                const pathCommands = parsePath(d);
+                let currentX = 0,
+                  currentY = 0;
+                const pathColor = strokeColor || fillColor;
+
+                if (pathColor && !pathColor.gradient) {
+                  pathCommands.forEach((cmd) => {
+                    if (cmd.type === "M") {
+                      currentX = cmd.x;
+                      currentY = cmd.y;
+                    } else if (cmd.type === "L") {
+                      code += `  tft.drawLine(x_offset + ${currentX}, y_offset + ${currentY}, x_offset + ${cmd.x}, y_offset + ${cmd.y}, ${pathColor});\n`;
+                      currentX = cmd.x;
+                      currentY = cmd.y;
+                    }
+                  });
+                }
+              }
+              break;
+
+            case "text":
+              const tx = parseFloat(el.attributes.x || 0);
+              const ty = parseFloat(el.attributes.y || 0);
+              const text = el.textContent.replace(/"/g, '\\"');
+
+              if (text && fillColor && !fillColor.gradient) {
+                code += `  tft.setTextColor(${fillColor});\n`;
+
+                const anchor = el.textAnchor || "start";
+                if (anchor === "middle") {
+                  code += `  tft.setTextDatum(MC_DATUM);\n`;
+                } else if (anchor === "end") {
+                  code += `  tft.setTextDatum(MR_DATUM);\n`;
+                } else {
+                  code += `  tft.setTextDatum(ML_DATUM);\n`;
+                }
+
+                code += `  tft.drawString("${text}", x_offset + ${tx}, y_offset + ${ty}, ${el.tftFont}); // ~${FONT_SIZES[el.tftFont]}px\n`;
+                code += `  tft.setTextDatum(TL_DATUM);\n`;
+              }
+              break;
+
+            case "image":
+              const ix = parseFloat(el.attributes.x || 0);
+              const iy = parseFloat(el.attributes.y || 0);
+              const iw = parseFloat(el.attributes.width || 0);
+              const ih = parseFloat(el.attributes.height || 0);
+
+              code += `  // Image: Convert to RGB565 using image2cpp (https://javl.github.io/image2cpp/)\n`;
+              code += `  // tft.pushImage(x_offset + ${ix}, y_offset + ${iy}, ${Math.round(iw)}, ${Math.round(ih)}, imageArray);\n`;
+              break;
+          }
+
+          code += "\n";
+        });
+
+        code += `}
+
+void setup() {
+  tft.init();
+  tft.setRotation(1);
+  tft.fillScreen(${backgroundColor});
+  
+  ${functionName}(tft, 0, 0);
+}
+
+void loop() {
+  // Add animation or interaction code here
+}
+`;
+
+        document.getElementById("codeOutput").value = code;
+      }
+
+      function parsePath(d) {
+        const commands = [];
+        const regex = /([MLHVCSQTAZ])([^MLHVCSQTAZ]*)/gi;
+        let match;
+        let currentX = 0,
+          currentY = 0;
+
+        while ((match = regex.exec(d)) !== null) {
+          const type = match[1].toUpperCase();
+          const isRelative = match[1] === match[1].toLowerCase();
+          const params = match[2]
+            .trim()
+            .split(/[\s,]+/)
+            .filter((p) => p)
+            .map(parseFloat);
+
+          if (type === "M" && params.length >= 2) {
+            currentX = isRelative ? currentX + params[0] : params[0];
+            currentY = isRelative ? currentY + params[1] : params[1];
+            commands.push({ type: "M", x: currentX, y: currentY });
+          } else if (type === "L" && params.length >= 2) {
+            currentX = isRelative ? currentX + params[0] : params[0];
+            currentY = isRelative ? currentY + params[1] : params[1];
+            commands.push({ type: "L", x: currentX, y: currentY });
+          } else if (type === "H" && params.length >= 1) {
+            currentX = isRelative ? currentX + params[0] : params[0];
+            commands.push({ type: "L", x: currentX, y: currentY });
+          } else if (type === "V" && params.length >= 1) {
+            currentY = isRelative ? currentY + params[0] : params[0];
+            commands.push({ type: "L", x: currentX, y: currentY });
+          }
+        }
+
+        return commands;
+      }
+
+      function copyCode() {
+        const codeOutput = document.getElementById("codeOutput");
+        codeOutput.select();
+        document.execCommand("copy");
+
+        const btn = event.target;
+        const originalText = btn.textContent;
+        btn.textContent = "✓ Copied!";
+        setTimeout(() => {
+          btn.textContent = originalText;
+        }, 2000);
+      }
+
+      function downloadSketch() {
+        const code = document.getElementById("codeOutput").value;
+        const blob = new Blob([code], { type: "text/plain" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = svgFileName + ".ino";
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+
+      function reset() {
+        currentSVG = null;
+        parsedElements = [];
+        gradients = {};
+        svgFileName = "";
+        backgroundColor = "TFT_BLACK";
+        document.getElementById("codeOutput").value = "";
+        fileInput.value = "";
+        document.getElementById("uploadPanel").classList.remove("hidden");
+        document.getElementById("outputPanel").classList.add("hidden");
+      }
+    </script>
+  </body>
+</html>
