@@ -170,10 +170,9 @@
           <button onclick="reset()">🔄 New SVG</button>
         </div>
 
-        <div class="info-box">
-          <strong>Auto-detected:</strong> Background color, text font sizes
-          mapped to TFT_eSPI fonts (1=8px, 2=16px, 4=26px, 6=48px, 7=48px
-          digits, 8=75px)
+        <div class="info-box" id="infoBox">
+          <strong>Auto-detected:</strong> Background color, viewport scaling,
+          text font sizes
         </div>
       </div>
     </div>
@@ -184,6 +183,10 @@
       let gradients = {};
       let svgFileName = "";
       let backgroundColor = "TFT_BLACK";
+      let scaleX = 1;
+      let scaleY = 1;
+      let screenWidth = 0;
+      let screenHeight = 0;
 
       // TFT_eSPI font sizes in pixels (approximate heights)
       const FONT_SIZES = {
@@ -191,11 +194,10 @@
         2: 16,
         4: 26,
         6: 48,
-        7: 48, // 7-segment
+        7: 48,
         8: 75,
       };
 
-      // File upload handling
       const uploadArea = document.getElementById("uploadArea");
       const fileInput = document.getElementById("fileInput");
 
@@ -260,23 +262,61 @@
           return;
         }
 
-        // Detect background color
+        calculateScaling();
         detectBackgroundColor();
-
-        // Parse SVG
         parseSVGElements();
         generateCode();
 
-        // Show output panel
+        document.getElementById("infoBox").innerHTML = `
+                <strong>Auto-detected:</strong> 
+                Screen: ${screenWidth}×${screenHeight}px, 
+                Scale: ${scaleX.toFixed(2)}x, 
+                Background: ${backgroundColor}, 
+                ${parsedElements.filter((e) => e.type === "text").length} text elements
+            `;
+
         document.getElementById("uploadPanel").classList.add("hidden");
         document.getElementById("outputPanel").classList.remove("hidden");
       }
 
+      function calculateScaling() {
+        const viewportWidth = parseFloat(currentSVG.getAttribute("width")) || 0;
+        const viewportHeight =
+          parseFloat(currentSVG.getAttribute("height")) || 0;
+
+        const viewBox = currentSVG.getAttribute("viewBox");
+        let viewBoxWidth, viewBoxHeight;
+
+        if (viewBox) {
+          const parts = viewBox.trim().split(/\s+|,/).map(parseFloat);
+          viewBoxWidth = parts[2] || viewportWidth || 100;
+          viewBoxHeight = parts[3] || viewportHeight || 100;
+        } else {
+          viewBoxWidth = viewportWidth || 100;
+          viewBoxHeight = viewportHeight || 100;
+        }
+
+        if (viewportWidth && viewBoxWidth) {
+          scaleX = viewportWidth / viewBoxWidth;
+          scaleY = viewportHeight / viewBoxHeight;
+          screenWidth = Math.round(viewportWidth);
+          screenHeight = Math.round(viewportHeight);
+        } else {
+          scaleX = 1;
+          scaleY = 1;
+          screenWidth = Math.round(viewBoxWidth);
+          screenHeight = Math.round(viewBoxHeight);
+        }
+      }
+
+      function scaleCoord(value, axis = "x") {
+        const scale = axis === "x" ? scaleX : scaleY;
+        return Math.round(value * scale);
+      }
+
       function detectBackgroundColor() {
-        // Check for background color in various places
         let bgColor = null;
 
-        // Check SVG style attribute
         const svgStyle = currentSVG.getAttribute("style");
         if (svgStyle) {
           const bgMatch = svgStyle.match(
@@ -287,13 +327,17 @@
           }
         }
 
-        // Check for a background rect (first rect that covers the whole viewbox)
         const viewBox = currentSVG.getAttribute("viewBox");
-        let vbWidth, vbHeight;
+        let vbWidth,
+          vbHeight,
+          vbMinX = 0,
+          vbMinY = 0;
         if (viewBox) {
-          const parts = viewBox.split(/\s+|,/);
-          vbWidth = parseFloat(parts[2]);
-          vbHeight = parseFloat(parts[3]);
+          const parts = viewBox.split(/\s+|,/).map(parseFloat);
+          vbMinX = parts[0] || 0;
+          vbMinY = parts[1] || 0;
+          vbWidth = parts[2];
+          vbHeight = parts[3];
         } else {
           vbWidth = parseFloat(currentSVG.getAttribute("width")) || 100;
           vbHeight = parseFloat(currentSVG.getAttribute("height")) || 100;
@@ -306,8 +350,12 @@
           const w = parseFloat(rect.getAttribute("width") || 0);
           const h = parseFloat(rect.getAttribute("height") || 0);
 
-          // Check if this rect covers the entire canvas
-          if (x === 0 && y === 0 && w === vbWidth && h === vbHeight) {
+          if (
+            Math.abs(x - vbMinX) < 0.1 &&
+            Math.abs(y - vbMinY) < 0.1 &&
+            Math.abs(w - vbWidth) < 0.1 &&
+            Math.abs(h - vbHeight) < 0.1
+          ) {
             const fill =
               rect.getAttribute("fill") || getStyleValue(rect, "fill");
             if (fill && fill !== "none") {
@@ -317,7 +365,6 @@
           }
         }
 
-        // Convert to TFT color
         backgroundColor = bgColor ? colorToRGB565(bgColor) : "TFT_BLACK";
         if (!backgroundColor) {
           backgroundColor = "TFT_BLACK";
@@ -325,17 +372,16 @@
       }
 
       function getClosestFont(pixelSize) {
-        // Parse pixel size from various formats
         let size = pixelSize;
         if (typeof size === "string") {
           size = parseFloat(size.replace(/px|pt|em|rem/gi, ""));
-          // Convert pt to px (1pt ≈ 1.333px)
           if (pixelSize.includes("pt")) {
             size *= 1.333;
           }
         }
 
-        // Find closest TFT_eSPI font
+        size = size * scaleY;
+
         let closestFont = 2;
         let minDiff = Infinity;
 
@@ -350,6 +396,20 @@
         return closestFont;
       }
 
+      function parseStyleAttribute(styleStr) {
+        const styles = {};
+        if (!styleStr) return styles;
+
+        const declarations = styleStr.split(";");
+        for (let decl of declarations) {
+          const [prop, value] = decl.split(":").map((s) => s.trim());
+          if (prop && value) {
+            styles[prop] = value;
+          }
+        }
+        return styles;
+      }
+
       function getStyleValue(element, attr, defaultValue = null) {
         if (element.hasAttribute(attr)) {
           return element.getAttribute(attr);
@@ -357,10 +417,9 @@
 
         const styleAttr = element.getAttribute("style");
         if (styleAttr) {
-          const regex = new RegExp(attr + "\\s*:\\s*([^;]+)", "i");
-          const match = styleAttr.match(regex);
-          if (match) {
-            return match[1].trim();
+          const styles = parseStyleAttribute(styleAttr);
+          if (styles[attr]) {
+            return styles[attr];
           }
         }
 
@@ -372,10 +431,9 @@
 
           const parentStyle = parent.getAttribute("style");
           if (parentStyle) {
-            const regex = new RegExp(attr + "\\s*:\\s*([^;]+)", "i");
-            const match = parentStyle.match(regex);
-            if (match) {
-              return match[1].trim();
+            const styles = parseStyleAttribute(parentStyle);
+            if (styles[attr]) {
+              return styles[attr];
             }
           }
 
@@ -388,10 +446,9 @@
 
         const svgStyle = currentSVG ? currentSVG.getAttribute("style") : null;
         if (svgStyle) {
-          const regex = new RegExp(attr + "\\s*:\\s*([^;]+)", "i");
-          const match = svgStyle.match(regex);
-          if (match) {
-            return match[1].trim();
+          const styles = parseStyleAttribute(svgStyle);
+          if (styles[attr]) {
+            return styles[attr];
           }
         }
 
@@ -402,7 +459,6 @@
         parsedElements = [];
         gradients = {};
 
-        // Parse gradients
         const linearGradients = currentSVG.querySelectorAll("linearGradient");
         linearGradients.forEach((grad) => {
           const id = grad.getAttribute("id");
@@ -420,7 +476,6 @@
           }
         });
 
-        // Parse all drawable elements
         const elements = currentSVG.querySelectorAll(
           "rect, circle, ellipse, line, polyline, polygon, path, text, image",
         );
@@ -442,11 +497,71 @@
           element.strokeWidth = getStyleValue(el, "stroke-width", "1");
 
           if (type === "text") {
-            element.fontSize = getStyleValue(el, "font-size", "16px");
-            element.fontFamily = getStyleValue(el, "font-family", "sans-serif");
-            element.textContent = el.textContent.trim();
-            element.textAnchor = getStyleValue(el, "text-anchor", "start");
-            element.tftFont = getClosestFont(element.fontSize);
+            // Check if text has tspan children
+            const tspans = el.querySelectorAll("tspan");
+
+            if (tspans.length > 0) {
+              // Process each tspan as a separate text element
+              tspans.forEach((tspan) => {
+                const tspanElement = {
+                  type: "text",
+                  attributes: {},
+                };
+
+                // Get position from tspan or inherit from parent
+                tspanElement.attributes.x =
+                  tspan.getAttribute("x") || el.getAttribute("x") || "0";
+                tspanElement.attributes.y =
+                  tspan.getAttribute("y") || el.getAttribute("y") || "0";
+
+                // Get fill from tspan first, then parent text element
+                tspanElement.fill = getStyleValue(
+                  tspan,
+                  "fill",
+                  getStyleValue(el, "fill", "black"),
+                );
+                tspanElement.stroke = getStyleValue(tspan, "stroke", "none");
+                tspanElement.strokeWidth = getStyleValue(
+                  tspan,
+                  "stroke-width",
+                  "1",
+                );
+
+                tspanElement.fontSize = getStyleValue(
+                  tspan,
+                  "font-size",
+                  getStyleValue(el, "font-size", "16px"),
+                );
+                tspanElement.fontFamily = getStyleValue(
+                  tspan,
+                  "font-family",
+                  getStyleValue(el, "font-family", "sans-serif"),
+                );
+                tspanElement.textContent = tspan.textContent.trim();
+                tspanElement.textAnchor = getStyleValue(
+                  tspan,
+                  "text-anchor",
+                  getStyleValue(el, "text-anchor", "start"),
+                );
+                tspanElement.tftFont = getClosestFont(tspanElement.fontSize);
+
+                parsedElements.push(tspanElement);
+              });
+
+              // Don't add the parent text element
+              return;
+            } else {
+              // No tspans, use text element directly
+              element.fontSize = getStyleValue(el, "font-size", "16px");
+              element.fontFamily = getStyleValue(
+                el,
+                "font-family",
+                "sans-serif",
+              );
+              element.textContent = el.textContent.trim();
+              element.textAnchor = getStyleValue(el, "text-anchor", "start");
+              element.tftFont = getClosestFont(element.fontSize);
+            }
           }
 
           if (type === "image") {
@@ -530,6 +645,7 @@
 
         let code = `// Generated by SVG to TFT_eSPI Converter
 // Source: ${svgFileName}.svg
+// Target screen: ${screenWidth}×${screenHeight}px
 
 #include <TFT_eSPI.h>
 
@@ -546,11 +662,11 @@ void ${functionName}(TFT_eSPI &tft, int16_t x_offset, int16_t y_offset) {
 
           switch (el.type) {
             case "rect":
-              const x = parseFloat(el.attributes.x || 0);
-              const y = parseFloat(el.attributes.y || 0);
-              const w = parseFloat(el.attributes.width || 0);
-              const h = parseFloat(el.attributes.height || 0);
-              const rx = parseFloat(el.attributes.rx || 0);
+              const x = scaleCoord(parseFloat(el.attributes.x || 0), "x");
+              const y = scaleCoord(parseFloat(el.attributes.y || 0), "y");
+              const w = scaleCoord(parseFloat(el.attributes.width || 0), "x");
+              const h = scaleCoord(parseFloat(el.attributes.height || 0), "y");
+              const rx = scaleCoord(parseFloat(el.attributes.rx || 0), "x");
 
               if (fillColor && fillColor.gradient) {
                 const grad = gradients[fillColor.gradient];
@@ -577,9 +693,9 @@ void ${functionName}(TFT_eSPI &tft, int16_t x_offset, int16_t y_offset) {
               break;
 
             case "circle":
-              const cx = parseFloat(el.attributes.cx || 0);
-              const cy = parseFloat(el.attributes.cy || 0);
-              const r = parseFloat(el.attributes.r || 0);
+              const cx = scaleCoord(parseFloat(el.attributes.cx || 0), "x");
+              const cy = scaleCoord(parseFloat(el.attributes.cy || 0), "y");
+              const r = scaleCoord(parseFloat(el.attributes.r || 0), "x");
 
               if (fillColor && !fillColor.gradient) {
                 code += `  tft.fillCircle(x_offset + ${cx}, y_offset + ${cy}, ${r}, ${fillColor});\n`;
@@ -590,26 +706,26 @@ void ${functionName}(TFT_eSPI &tft, int16_t x_offset, int16_t y_offset) {
               break;
 
             case "ellipse":
-              const ecx = parseFloat(el.attributes.cx || 0);
-              const ecy = parseFloat(el.attributes.cy || 0);
-              const erx = parseFloat(el.attributes.rx || 0);
-              const ery = parseFloat(el.attributes.ry || 0);
+              const ecx = scaleCoord(parseFloat(el.attributes.cx || 0), "x");
+              const ecy = scaleCoord(parseFloat(el.attributes.cy || 0), "y");
+              const erx = scaleCoord(parseFloat(el.attributes.rx || 0), "x");
+              const ery = scaleCoord(parseFloat(el.attributes.ry || 0), "y");
 
-              const avgR = (erx + ery) / 2;
+              const avgR = Math.round((erx + ery) / 2);
               if (fillColor && !fillColor.gradient) {
                 code += `  // Ellipse approximated as circle\n`;
-                code += `  tft.fillCircle(x_offset + ${ecx}, y_offset + ${ecy}, ${Math.round(avgR)}, ${fillColor});\n`;
+                code += `  tft.fillCircle(x_offset + ${ecx}, y_offset + ${ecy}, ${avgR}, ${fillColor});\n`;
               }
               if (strokeColor) {
-                code += `  tft.drawCircle(x_offset + ${ecx}, y_offset + ${ecy}, ${Math.round(avgR)}, ${strokeColor});\n`;
+                code += `  tft.drawCircle(x_offset + ${ecx}, y_offset + ${ecy}, ${avgR}, ${strokeColor});\n`;
               }
               break;
 
             case "line":
-              const x1 = parseFloat(el.attributes.x1 || 0);
-              const y1 = parseFloat(el.attributes.y1 || 0);
-              const x2 = parseFloat(el.attributes.x2 || 0);
-              const y2 = parseFloat(el.attributes.y2 || 0);
+              const x1 = scaleCoord(parseFloat(el.attributes.x1 || 0), "x");
+              const y1 = scaleCoord(parseFloat(el.attributes.y1 || 0), "y");
+              const x2 = scaleCoord(parseFloat(el.attributes.x2 || 0), "x");
+              const y2 = scaleCoord(parseFloat(el.attributes.y2 || 0), "y");
 
               const lineColor = strokeColor || fillColor;
               if (lineColor && !lineColor.gradient) {
@@ -623,25 +739,28 @@ void ${functionName}(TFT_eSPI &tft, int16_t x_offset, int16_t y_offset) {
                 .trim()
                 .split(/[\s,]+/)
                 .map(parseFloat);
+              const scaledPoints = points.map((p, i) =>
+                scaleCoord(p, i % 2 === 0 ? "x" : "y"),
+              );
               const polyColor = strokeColor || fillColor;
 
-              if (points.length === 6 && el.type === "polygon") {
+              if (scaledPoints.length === 6 && el.type === "polygon") {
                 if (fillColor && !fillColor.gradient) {
-                  code += `  tft.fillTriangle(x_offset + ${points[0]}, y_offset + ${points[1]}, x_offset + ${points[2]}, y_offset + ${points[3]}, x_offset + ${points[4]}, y_offset + ${points[5]}, ${fillColor});\n`;
+                  code += `  tft.fillTriangle(x_offset + ${scaledPoints[0]}, y_offset + ${scaledPoints[1]}, x_offset + ${scaledPoints[2]}, y_offset + ${scaledPoints[3]}, x_offset + ${scaledPoints[4]}, y_offset + ${scaledPoints[5]}, ${fillColor});\n`;
                 }
                 if (strokeColor) {
-                  code += `  tft.drawTriangle(x_offset + ${points[0]}, y_offset + ${points[1]}, x_offset + ${points[2]}, y_offset + ${points[3]}, x_offset + ${points[4]}, y_offset + ${points[5]}, ${strokeColor});\n`;
+                  code += `  tft.drawTriangle(x_offset + ${scaledPoints[0]}, y_offset + ${scaledPoints[1]}, x_offset + ${scaledPoints[2]}, y_offset + ${scaledPoints[3]}, x_offset + ${scaledPoints[4]}, y_offset + ${scaledPoints[5]}, ${strokeColor});\n`;
                 }
               } else if (
                 polyColor &&
                 !polyColor.gradient &&
-                points.length >= 4
+                scaledPoints.length >= 4
               ) {
-                for (let i = 0; i < points.length - 2; i += 2) {
-                  code += `  tft.drawLine(x_offset + ${points[i]}, y_offset + ${points[i + 1]}, x_offset + ${points[i + 2]}, y_offset + ${points[i + 3]}, ${polyColor});\n`;
+                for (let i = 0; i < scaledPoints.length - 2; i += 2) {
+                  code += `  tft.drawLine(x_offset + ${scaledPoints[i]}, y_offset + ${scaledPoints[i + 1]}, x_offset + ${scaledPoints[i + 2]}, y_offset + ${scaledPoints[i + 3]}, ${polyColor});\n`;
                 }
-                if (el.type === "polygon" && points.length >= 4) {
-                  code += `  tft.drawLine(x_offset + ${points[points.length - 2]}, y_offset + ${points[points.length - 1]}, x_offset + ${points[0]}, y_offset + ${points[1]}, ${polyColor});\n`;
+                if (el.type === "polygon" && scaledPoints.length >= 4) {
+                  code += `  tft.drawLine(x_offset + ${scaledPoints[scaledPoints.length - 2]}, y_offset + ${scaledPoints[scaledPoints.length - 1]}, x_offset + ${scaledPoints[0]}, y_offset + ${scaledPoints[1]}, ${polyColor});\n`;
                 }
               }
               break;
@@ -658,12 +777,14 @@ void ${functionName}(TFT_eSPI &tft, int16_t x_offset, int16_t y_offset) {
                 if (pathColor && !pathColor.gradient) {
                   pathCommands.forEach((cmd) => {
                     if (cmd.type === "M") {
-                      currentX = cmd.x;
-                      currentY = cmd.y;
+                      currentX = scaleCoord(cmd.x, "x");
+                      currentY = scaleCoord(cmd.y, "y");
                     } else if (cmd.type === "L") {
-                      code += `  tft.drawLine(x_offset + ${currentX}, y_offset + ${currentY}, x_offset + ${cmd.x}, y_offset + ${cmd.y}, ${pathColor});\n`;
-                      currentX = cmd.x;
-                      currentY = cmd.y;
+                      const newX = scaleCoord(cmd.x, "x");
+                      const newY = scaleCoord(cmd.y, "y");
+                      code += `  tft.drawLine(x_offset + ${currentX}, y_offset + ${currentY}, x_offset + ${newX}, y_offset + ${newY}, ${pathColor});\n`;
+                      currentX = newX;
+                      currentY = newY;
                     }
                   });
                 }
@@ -671,8 +792,8 @@ void ${functionName}(TFT_eSPI &tft, int16_t x_offset, int16_t y_offset) {
               break;
 
             case "text":
-              const tx = parseFloat(el.attributes.x || 0);
-              const ty = parseFloat(el.attributes.y || 0);
+              const tx = scaleCoord(parseFloat(el.attributes.x || 0), "x");
+              const ty = scaleCoord(parseFloat(el.attributes.y || 0), "y");
               const text = el.textContent.replace(/"/g, '\\"');
 
               if (text && fillColor && !fillColor.gradient) {
@@ -693,13 +814,13 @@ void ${functionName}(TFT_eSPI &tft, int16_t x_offset, int16_t y_offset) {
               break;
 
             case "image":
-              const ix = parseFloat(el.attributes.x || 0);
-              const iy = parseFloat(el.attributes.y || 0);
-              const iw = parseFloat(el.attributes.width || 0);
-              const ih = parseFloat(el.attributes.height || 0);
+              const ix = scaleCoord(parseFloat(el.attributes.x || 0), "x");
+              const iy = scaleCoord(parseFloat(el.attributes.y || 0), "y");
+              const iw = scaleCoord(parseFloat(el.attributes.width || 0), "x");
+              const ih = scaleCoord(parseFloat(el.attributes.height || 0), "y");
 
               code += `  // Image: Convert to RGB565 using image2cpp (https://javl.github.io/image2cpp/)\n`;
-              code += `  // tft.pushImage(x_offset + ${ix}, y_offset + ${iy}, ${Math.round(iw)}, ${Math.round(ih)}, imageArray);\n`;
+              code += `  // tft.pushImage(x_offset + ${ix}, y_offset + ${iy}, ${iw}, ${ih}, imageArray);\n`;
               break;
           }
 
@@ -790,6 +911,10 @@ void loop() {
         gradients = {};
         svgFileName = "";
         backgroundColor = "TFT_BLACK";
+        scaleX = 1;
+        scaleY = 1;
+        screenWidth = 0;
+        screenHeight = 0;
         document.getElementById("codeOutput").value = "";
         fileInput.value = "";
         document.getElementById("uploadPanel").classList.remove("hidden");
